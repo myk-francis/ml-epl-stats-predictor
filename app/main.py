@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Depends
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import func  # <-- import func here
 import pickle, datetime
@@ -8,6 +9,28 @@ import models, ml_utils, database
 
 models.Base.metadata.create_all(bind=database.engine)
 app = FastAPI()
+
+# allow your frontend domain here
+origins = [
+    "http://localhost:3000",   # local dev frontend
+    "https://drinking-games-hub.vercel.app",  # production frontend
+]
+
+# app.add_middleware(
+#     CORSMiddleware,
+#     allow_origins=origins,
+#     allow_credentials=True,
+#     allow_methods=["*"],
+#     allow_headers=["*"],
+# )
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 
