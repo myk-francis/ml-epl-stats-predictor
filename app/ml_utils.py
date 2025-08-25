@@ -4,6 +4,15 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score
+import os
+
+# Path to data file
+DATA_PATH = os.path.join(os.path.dirname(__file__), "DATA", "epl_goals_2.csv")
+
+def load_initial_data():
+    """Loads the CSV from the data folder"""
+    df = pd.read_csv(DATA_PATH)
+    return df
 
 def train_model(df: pd.DataFrame):
     df["Target"] = (df["TotalGoals"] >= 2).astype(int)

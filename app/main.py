@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Depends
 from sqlalchemy.orm import Session
+from sqlalchemy import func  # <-- import func here
 import pickle, datetime
 import pandas as pd
 
@@ -7,6 +8,8 @@ import models, ml_utils, database
 
 models.Base.metadata.create_all(bind=database.engine)
 app = FastAPI()
+
+
 
 def get_db():
     db = database.SessionLocal()
@@ -17,12 +20,16 @@ def get_db():
 
 # 1. Initial training
 @app.post("/train-initial/")
-def train_initial(csv_path: str, db: Session = Depends(get_db)):
-    df = pd.read_csv(csv_path)
+def train_initial( db: Session = Depends(get_db)):
+    # Load CSV data from data/ folder
+    df = ml_utils.load_initial_data()
+    df_to_save = df[["HomeTeam", "AwayTeam", "Month", "Weekday", "TotalGoals"]]
+
+    # Train
     model, encoder, acc = ml_utils.train_model(df)
 
     # Save data
-    for _, row in df.iterrows():
+    for _, row in df_to_save.iterrows():
         match = models.MatchData(**row.to_dict())
         db.add(match)
     db.commit()
@@ -83,5 +90,7 @@ def status(db: Session = Depends(get_db)):
 # 5. Logs
 @app.get("/logs/")
 def get_logs(date: str, db: Session = Depends(get_db)):
-    logs = db.query(models.Logs).filter(models.Logs.created_at == datetime.datetime.strptime(date, "%Y-%m-%d").date()).all()
+    # Parse the date string into a datetime.date object
+    target_date = datetime.datetime.strptime(date, "%Y-%m-%d").date()
+    logs = db.query(models.Logs).filter(func.date(models.Logs.created_at) == target_date).all()
     return [{"time": l.created_at, "msg": l.message} for l in logs]
