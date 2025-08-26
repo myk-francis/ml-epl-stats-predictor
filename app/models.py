@@ -8,14 +8,19 @@ class MatchData(Base):
     id = Column(Integer, primary_key=True, index=True)
     HomeTeam = Column(String)
     AwayTeam = Column(String)
+    Year = Column(Integer)
     Month = Column(Integer)
     Weekday = Column(Integer)
     TotalGoals = Column(Integer)
+    TotalBookings = Column(Integer)
+    TotalCorners = Column(Integer)
 
 class ModelStore(Base):
     __tablename__ = "model_store"
+
     id = Column(Integer, primary_key=True, index=True)
-    model = Column(LargeBinary)   # pickle dump of model
+    model_name = Column(String, index=True)   # "goals", "bookings", "corners"
+    model = Column(LargeBinary)
     encoders = Column(LargeBinary)
     accuracy = Column(Float)
     trained_at = Column(DateTime(timezone=True), server_default=func.now())

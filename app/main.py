@@ -42,61 +42,128 @@ def get_db():
 
 # 1. Initial training
 @app.post("/train-initial/")
-def train_initial( db: Session = Depends(get_db)):
+def train_initial(db: Session = Depends(get_db)):
     # Load CSV data from data/ folder
     df = ml_utils.load_initial_data()
-    df_to_save = df[["HomeTeam", "AwayTeam", "Month", "Weekday", "TotalGoals"]]
 
-    # Train
-    model, encoder, acc = ml_utils.train_model(df)
+    # Keep columns to save into DB
+    df_to_save = df[["HomeTeam", "AwayTeam", "Year", "Month", "Weekday", 
+                     "TotalGoals", "TotalBookings", "TotalCorners"]]
 
-    # Save data
+    # Save match data into DB
     for _, row in df_to_save.iterrows():
         match = models.MatchData(**row.to_dict())
         db.add(match)
     db.commit()
 
-    # Save model
-    model_bytes = pickle.dumps(model)
-    encoder_bytes = pickle.dumps(encoder)
-    m = models.ModelStore(model=model_bytes, encoders=encoder_bytes, accuracy=acc)
-    db.add(m)
-    db.add(models.Logs(message=f"Initial training done. Accuracy: {acc:.2f}"))
+    # Define tasks -> (column, threshold)
+    tasks = {
+        "goals": ("TotalGoals", 2),       # >= 2 goals
+        "bookings": ("TotalBookings", 3), # >= 3 bookings
+        "corners": ("TotalCorners", 10)   # >= 10 corners
+    }
+
+    results = {}
+
+    for task_name, (col, threshold) in tasks.items():
+        model, encoder, acc = ml_utils.train_model(df, col, threshold)
+
+        # Save each trained model
+        m = models.ModelStore(
+            model_name=task_name,
+            model=pickle.dumps(model),
+            encoders=pickle.dumps(encoder),
+            accuracy=acc
+        )
+        db.add(m)
+        db.add(models.Logs(message=f"Initial training for {task_name} done. Accuracy: {acc:.2f}"))
+        results[task_name] = {"accuracy": acc}
+
     db.commit()
-    return {"accuracy": acc}
+    return results
+
+
+
 
 # 2. Predict
 @app.post("/predict/")
 def predict_games_api(games: list[tuple], db: Session = Depends(get_db)):
-    latest_model = db.query(models.ModelStore).order_by(models.ModelStore.trained_at.desc()).first()
-    model = pickle.loads(latest_model.model)
-    encoder = pickle.loads(latest_model.encoders)
+    # Load all models
+    models_list = db.query(models.ModelStore).order_by(models.ModelStore.trained_at.desc()).all()
+
+    # Pick the latest version of each model type
+    task_models = {}
+    encoder = None
+    for m in models_list:
+        if m.model_name not in task_models:  # first one encountered is latest (due to desc order)
+            task_models[m.model_name] = pickle.loads(m.model) # type: ignore
+            if encoder is None:  # all models share the same encoder
+                encoder = pickle.loads(m.encoders) # type: ignore
 
     today = datetime.date.today()
     weekday = today.weekday()  # Monday=0
     month = today.month
     year = today.year
 
-    df_preds = ml_utils.predict_games(model, encoder, games, year, month, weekday)
+    # Run predictions for each model
+    df_preds = ml_utils.predict_games_multi(task_models, encoder, games, year, month, weekday)
+
     return df_preds.to_dict(orient="records")
 
+
 # 3. Retrain with new data
-@app.post("/train-new/")
-def train_new(records: list[dict], db: Session = Depends(get_db)):
-    # Insert new data
-    for rec in records:
-        db.add(models.MatchData(**rec))
+@app.post("/train/")
+def train_incremental(new_data: list[dict], db: Session = Depends(get_db)):
+    """
+    Add new match data with a Date field, save to DB, and retrain all models.
+    """
+    processed_rows = []
+    for row in new_data:
+        # Parse date
+        date_obj = datetime.datetime.strptime(row["Date"], "%Y-%m-%d")
+        row["Year"] = date_obj.year
+        row["Month"] = date_obj.month
+        row["Weekday"] = date_obj.weekday()  # Monday=0, Sunday=6
+        del row["Date"]  # no need to store raw Date since we break it down
+        processed_rows.append(row)
+
+    # 1. Save new data into DB
+    for row in processed_rows:
+        match = models.MatchData(**row)
+        db.add(match)
     db.commit()
 
-    # Retrain on full dataset
-    all_data = pd.read_sql(db.query(models.MatchData).statement, db.get_bind())
-    model, encoder, acc = ml_utils.train_model(all_data)
+    if db.bind is None:
+        raise ValueError("Database bind is not available.")
 
-    m = models.ModelStore(model=pickle.dumps(model), encoders=pickle.dumps(encoder), accuracy=acc)
-    db.add(m)
-    db.add(models.Logs(message=f"Retrained model. Accuracy: {acc:.2f}"))
+    # 2. Load all data back from DB
+    all_data = pd.read_sql(db.query(models.MatchData).statement, db.bind)
+
+    # 3. Train models for goals, bookings, corners
+    tasks = {
+        "goals": ("TotalGoals", 2),       # >= 2 goals
+        "bookings": ("TotalBookings", 3), # >= 3 bookings
+        "corners": ("TotalCorners", 10)   # >= 10 corners
+    }
+
+    results = {}
+    for task_name, (col, threshold) in tasks.items():
+        model, encoder, acc = ml_utils.train_model(all_data, col, threshold)
+
+        # Save model in DB
+        m = models.ModelStore(
+            model_name=task_name,
+            model=pickle.dumps(model),
+            encoders=pickle.dumps(encoder),
+            accuracy=acc
+        )
+        db.add(m)
+        db.add(models.Logs(message=f"Retrained {task_name} model. Accuracy: {acc:.2f}"))
+        results[task_name] = acc
+
     db.commit()
-    return {"accuracy": acc}
+    return {"accuracies": results}
+
 
 # 4. Status
 @app.get("/status/")
