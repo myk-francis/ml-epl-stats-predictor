@@ -116,6 +116,7 @@ def predict_games_api(games: list[tuple], db: Session = Depends(get_db)):
 def train_incremental(new_data: list[dict], db: Session = Depends(get_db)):
     """
     Add new match data with a Date field, save to DB, and retrain all models.
+    Existing models are deleted first so only one per task remains.
     """
     processed_rows = []
     for row in new_data:
@@ -139,7 +140,11 @@ def train_incremental(new_data: list[dict], db: Session = Depends(get_db)):
     # 2. Load all data back from DB
     all_data = pd.read_sql(db.query(models.MatchData).statement, db.bind)
 
-    # 3. Train models for goals, bookings, corners
+    # 3. Delete all old models before training new ones
+    db.query(models.ModelStore).delete()
+    db.commit()
+
+    # 4. Train models for goals, bookings, corners
     tasks = {
         "goals": ("TotalGoals", 2),       # >= 2 goals
         "bookings": ("TotalBookings", 3), # >= 3 bookings
